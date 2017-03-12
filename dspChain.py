@@ -4,6 +4,8 @@ from itertools import repeat
 import numpy as np
 import matplotlib.pyplot as plt
 import multiprocessing as mp
+import sys as sys
+import argparse as argp
 
 # Performance
 # Desktop: 2 x Intel Xeon X5680 (3.33 GHz, 2 x 6PC/12LC == 12PC/24LC):
@@ -18,52 +20,6 @@ import multiprocessing as mp
 # 1e6 analog points: 3426.85s user 14.19s system 769% cpu 7:26.98  total
 # 1e5 analog points:  295.04s user  0.85s system 767% cpu   38.578 total
 # 1e4 analog points:   27.02s use r 0.16s system 691% cpu    3.931 total
-
-
-# ########################################################################## #
-# GLOBAL CONSTANTS                                                           #
-# ########################################################################## #
-# -------------------------------------------------------- #
-# For  good results,  ensure that  the evaluated  range is #
-# a  good  bit  longer  than  the range  which  is  to  be #
-# plotted. Default is a factor or 10.                      #
-# -------------------------------------------------------- #
-PLOT_START  =  9 * np.pi
-PLOT_STOP   = 11 * np.pi
-T_START     =  0
-T_STOP      = PLOT_STOP + (PLOT_START - T_START)
-# -------------------------------------------------------- #
-# NOTE: If the number of analog points is too low, some of #
-# the  dirac pulses  will  coincide. This  means that  the #
-# pulse sequence at those points will have a value of 2 or #
-# higher, instead of 1.                                    #
-# Therefore,  ensure that  NA  is  high enough. Roughly  a #
-# thousand  samples  per  2*pi  of  evaluated  range  (the #
-# difference between T_START and T_STOP) are a pretty good #
-# value in my experience.                                  #
-# A higher value will result in a smaller error signal.    #
-# -------------------------------------------------------- #
-NA          = 1e6
-# -------------------------------------------------------- #
-# The  number of  points to  be plotted  shouldn't be  too #
-# high. NA and PLOTTING_POINTS are later used to configure #
-# the 'each nth point' key for some of the pgfplots axes.  #
-# -------------------------------------------------------- #
-PLOTTING_POINTS = 1000
-NA_PLOT_SECTION = np.ceil(NA * (PLOT_STOP - PLOT_START)/(T_STOP - T_START))
-DELTA_T     = (T_STOP - T_START) / NA
-FA          = 1                    # analog base frequency #
-FREQ_FACTOR = 11
-FS          = FREQ_FACTOR * FA        # Sampling frequency #
-TS          = 1/FS
-TA_AXIS     = np.arange(T_START,T_STOP,DELTA_T)
-TD_AXIS     = np.arange(T_START,T_STOP+TS,TS)
-ND          = TD_AXIS.size
-# -------------------------------------------------------- #
-# Due to  numerical inaccuracies, the original  NA and the #
-# TA_Axis length can deviate.  Make sure they do not.      #
-# -------------------------------------------------------- #
-NA          = TA_AXIS.size
 
 
 # ########################################################################## #
@@ -85,14 +41,10 @@ def check_input(plot_start,
         na,
         nd):
 
-    assert isinstance(plot_start,(int,float))
     # Starting earlier than 0 has undesired results.
     assert plot_start >= 0
-    assert isinstance(plot_stop,(int,float))
     assert plot_stop > t_start
-    assert isinstance(t_start,(int,float))
     assert t_start >= 0
-    assert isinstance(plotting_points ,(int))
     # ---------------------------------------------------- #
     # There should  be at least  as many analog  points in #
     # the  interval of  the  analog axis  which  is to  be #
@@ -100,47 +52,51 @@ def check_input(plot_start,
     # plotted.                                             #
     # ---------------------------------------------------- #
     assert plotting_points <= na_plot_section
-    assert isinstance(t_stop ,(int,float))
     assert t_stop > t_start
     assert na >= 10 # This is an arbitrary lower limit.
-    assert isinstance(fa,(int,float))
     assert fa > 0
-    assert isinstance(freq_factor,(int,float))
     assert freq_factor > 0
-    assert isinstance(fs,(int,float))
     assert fs > 0
 
 
-def get_analog_signal(time_axis,analog_base_frequency):
-    # Simple Sine ---------------------------------------------------------- #
-    #return np.sin(2 * np.pi * analog_base_frequency * time_axis)
+def get_analog_signal(time_axis, analog_base_frequency, waveform):
 
-    # Trapezoidal Wave ----------------------------------------------------- #
-    #http://www.till.com/articles/QuadTrapVCO/trapezoid.html
-    signal = np.array(np.zeros(time_axis.size))
-    for k in range(1,10):
-        signal += 8/(np.pi * k)**2 * (
-            (np.sin(k * np.pi/4) + np.sin(3 * k * np.pi/4)) * (
-                np.sin(k*np.pi*analog_base_frequency*time_axis)))
-    return signal
+    # Default signal: sine wave
+
+    if waveform == 'trapezoid':
+        # Trapezoidal Wave ------------------------------------------------- #
+        #http://www.till.com/articles/QuadTrapVCO/trapezoid.html
+        signal = np.array(np.zeros(time_axis.size))
+        for k in range(1,10):
+            signal += 8/(np.pi * k)**2 * (
+                (np.sin(k * np.pi/4) + np.sin(3 * k * np.pi/4)) * (
+                    np.sin(k*np.pi*analog_base_frequency*time_axis)))
+        return signal
+    else:
+        # Simple Sine ------------------------------------------------------ #
+        return np.sin(2 * np.pi * analog_base_frequency * time_axis)
 
 
 def find_closest_time_point(digital_time_point,analog_time_axis,delta_a):
+
     axis_with_single_dirac = np.zeros(analog_time_axis.size)
 
     j = 0
     for t in analog_time_axis:
         # For  the closest  possible analog time  point, set
         # dirac pulse to 1.
-        if digital_time_point >= t - delta_a/2 and digital_time_point < t + delta_a/2:
+        if digital_time_point >= t - delta_a/2 \
+                and digital_time_point < t + delta_a/2:
             axis_with_single_dirac[j] = 1
             break
         j += 1
     return axis_with_single_dirac
 
 
-def get_dirac_sequence(analog_time_axis,digital_time_axis,analog_sample_count,delta_a,pool):
-    dirac_sequence = np.vstack([analog_time_axis,np.zeros(analog_sample_count)])
+def get_dirac_sequence(
+        analog_time_axis,digital_time_axis,analog_sample_count,delta_a,pool):
+    dirac_sequence = np.vstack(
+            [analog_time_axis,np.zeros(analog_sample_count)])
 
     results = sum(pool.starmap(
         find_closest_time_point,
@@ -155,7 +111,8 @@ def get_dirac_sequence(analog_time_axis,digital_time_axis,analog_sample_count,de
     return dirac_sequence
 
 
-def strip_sampled_signal(signal_sampled_padded,dirac_sequence,digital_sample_count):
+def strip_sampled_signal(
+        signal_sampled_padded,dirac_sequence,digital_sample_count):
     j = 0
     k = 0
     signal_stripped = np.zeros(digital_sample_count)
@@ -169,20 +126,30 @@ def strip_sampled_signal(signal_sampled_padded,dirac_sequence,digital_sample_cou
 
 def sample_signal(signal,dirac_sequence,digital_sample_count):
     signal_sampled_padded = np.multiply(signal,dirac_sequence[1])
-    return strip_sampled_signal(signal_sampled_padded,dirac_sequence,digital_sample_count)
+    return strip_sampled_signal(
+            signal_sampled_padded,dirac_sequence,digital_sample_count)
 
 
-def reconstruct_at_analog_point(k,analog_time_point,digital_time_axis,signal_sampled,delta_a,Ts):
+def reconstruct_at_analog_point(
+        k, analog_time_point, digital_time_axis, signal_sampled, delta_a, Ts):
+
     signal_reconstruced_at_analog_point = 0
     j = 0
     for t in digital_time_axis:
-        signal_reconstruced_at_analog_point += signal_sampled[j] * np.sinc((k * delta_a - j * Ts)/Ts)
+        signal_reconstruced_at_analog_point += (
+                signal_sampled[j] * np.sinc((k * delta_a - j * Ts)/Ts))
         j += 1
 
     return signal_reconstruced_at_analog_point
 
 
-def reconstruct_signal(analog_time_axis,digital_time_axis,signal_sampled,delta_a,Ts,analog_sample_count,pool):
+def reconstruct_signal(
+        analog_time_axis, digital_time_axis,
+        signal_sampled,
+        delta_a,
+        Ts,
+        analog_sample_count,
+        pool):
     # Apparently these will be in the correct order. Cool.
     results = pool.starmap(
         reconstruct_at_analog_point,
@@ -199,13 +166,15 @@ def reconstruct_signal(analog_time_axis,digital_time_axis,signal_sampled,delta_a
     return results
 
 
-def plot_the_things(analog_time_axis,
-        digital_time_axis,
-        signal,signal_sampled,
+def plot_the_things(
+        analog_time_axis, digital_time_axis,
+        signal, signal_sampled,
         dirac_sequence,
         signal_reconstructed,
-        plot_start,
-        plot_stop):
+        plot_start, plot_stop,
+        t_start, t_stop,
+        freq_factor,
+        na):
 
     fig1 = plt.figure(figsize=[11.693,8.268])
     axes1 = fig1.add_subplot(221)
@@ -232,9 +201,9 @@ def plot_the_things(analog_time_axis,
     axes3.set_xlim([plot_start,plot_stop])
     axes4.set_xlim([plot_start,plot_stop])
     fig1.suptitle(
-        'Sampling and Reconstruction of an Analog Signal\nEvaluated Range: {:.2f} to {:.2f}'.format(T_START,T_STOP) +
-        '\nNumber of Analog Points: {}'.format(NA) +
-        '\nSampling Frequency={:.2f}*f_analog'.format(FREQ_FACTOR),
+        'Sampling and Reconstruction of an Analog Signal\nEvaluated Range: {:.2f} to {:.2f}'.format(t_start,t_stop) +
+        '\nNumber of Analog Points: {}'.format(na) +
+        '\nSampling Frequency={:.2f}*f_analog'.format(freq_factor),
         fontsize=12)
     plt.show()
     #plt.tight_layout()
@@ -271,17 +240,12 @@ def get_y_bounds_in_slice(data,
 # -------------------------------------------------------- #
 def write_to_files(analog_time_axis,
         digital_time_axis,
-        signal,
-        signal_sampled,
+        signal, signal_sampled,
         dirac_sequence,
         signal_reconstructed,
-        plot_start,
-        plot_stop,
-        plotting_points,
-        na,
-        na_plot_section,
-        t_start,
-        t_stop):
+        plot_start, plot_stop,
+        plotting_points, na, na_plot_section,
+        t_start, t_stop):
 
     analog_data        = np.vstack([analog_time_axis,signal])
     sampled_data       = np.vstack([digital_time_axis,signal_sampled])
@@ -319,29 +283,128 @@ def write_to_files(analog_time_axis,
 # ########################################################################## #
 # MAIN SEQUENCE                                                              #
 # ########################################################################## #
-if __name__ == '__main__':
-    check_input(PLOT_START,
-            PLOT_STOP,
-            T_START,
-            T_STOP,
-            PLOTTING_POINTS,
-            NA_PLOT_SECTION,
-            DELTA_T,FA,
-            FREQ_FACTOR,
-            FS,
-            TS,
-            TA_AXIS,
-            TD_AXIS,
-            NA,
-            ND)
+def main(argv):
+
+    # Parse Input Arguments. New Input Arguments Should Be Defined Here ---- #
+    parser = argp.ArgumentParser()
+    parser.add_argument("-s",
+            "--plotstart",
+            type=float,
+            default = 9 * np.pi,
+            help = "the starting point for the plot window")
+    parser.add_argument("-e",
+            "--plotstop",
+            type=float,
+            default = 11 * np.pi,
+            help = "the end point for the plot window")
+    parser.add_argument("-t",
+            "--totalpoints",
+            type=float,
+            default = 1e5,
+            help = "the total number of points on the analog axis")
+    parser.add_argument("-p",
+            "--plottingpoints",
+            type=float,
+            default = 1000,
+            help = "the number of points to be plotted")
+    parser.add_argument("-a",
+            "--analogfreq",
+            type=float,
+            default = 1,
+            help = "the analog base frequency")
+    parser.add_argument("-f",
+            "--samplingfactor",
+            type=float,
+            default = 3,
+            help = "factor for calculating sampling frequency from base frequency")
+    parser.add_argument("-w",
+            "--waveform",
+            type=str,
+            default = 'sine',
+            choices = ['sine', 'trapezoid'],
+            help = "the waveform for the analog signal")
+    parser.add_argument("-d",
+            "--display",
+            action = 'store_true',
+            help = "whether or not to display the waves in a matplotlib window")
+    parser.add_argument("-o",
+            "--store",
+            action = 'store_true',
+            help = "output results to data files")
+    args = parser.parse_args()
+
+    # Copy Arguments Into Variables for Further Use ------------------------ #
+    if args.plotstart:
+        plot_start = args.plotstart
+    if args.plotstop:
+        plot_stop = args.plotstop
+    if args.totalpoints:
+        na = args.totalpoints
+    if args.plottingpoints:
+        plotting_points = args.plottingpoints
+    if args.analogfreq:
+        fa = args.analogfreq
+    if args.samplingfactor:
+        freq_factor = args.samplingfactor
+    if args.waveform:
+        waveform = args.waveform
+
+    # Opens a matplotlib window if True ------------------------------------ #
+    if args.display:
+        display = True
+    else:
+        display = False
+
+    # Stores the Results to Files if True ---------------------------------- #
+    if args.store:
+        store = True
+    else:
+        store = False
+
+    # Determine Some Parameters from Input Arguments ----------------------- #
+    t_start         =  0
+    t_stop          = plot_stop + (plot_start - t_start)
+    na_plot_section = np.ceil(na * (plot_stop - plot_start)/(t_stop - t_start))
+    delta_t         = (t_stop - t_start) / na
+    fs              = freq_factor * fa        # sampling frequency
+    ts              = 1/fs
+    ta_axis         = np.arange(t_start,t_stop,delta_t)
+    td_axis         = np.arange(t_start,t_stop+ts,ts)
+    nd              = td_axis.size
+    na              = ta_axis.size
 
     pool = mp.Pool()
 
+    # Verify Some Additional Constraints ----------------------------------- #
+    check_input(
+            plot_start, plot_stop,
+            t_start, t_stop,
+            plotting_points,
+            na_plot_section,
+            delta_t,
+            fa, freq_factor, fs,
+            ts,
+            ta_axis, td_axis,
+            na, nd)
+
     # Time Domain ---------------------------------------------------------- #
-    dirac_sequence       = get_dirac_sequence(TA_AXIS,TD_AXIS,NA,DELTA_T,pool)
-    signal               = get_analog_signal(TA_AXIS,FA)
-    signal_sampled       = sample_signal(signal,dirac_sequence,ND)
-    signal_reconstructed = reconstruct_signal(TA_AXIS,TD_AXIS,signal_sampled,DELTA_T,TS,NA,pool)
+    dirac_sequence = get_dirac_sequence(
+            ta_axis, td_axis,
+            na,
+            delta_t,
+            pool)
+
+    signal = get_analog_signal(ta_axis, fa, waveform)
+
+    signal_sampled = sample_signal(signal, dirac_sequence, nd)
+
+    signal_reconstructed = reconstruct_signal(
+            ta_axis, td_axis,
+            signal_sampled,
+            delta_t,
+            ts,
+            na,
+            pool)
 
     # Frequency Domain ----------------------------------------------------- #
     # DFT of sampled signal
@@ -352,22 +415,32 @@ if __name__ == '__main__':
 
     # Convolution ---------------------------------------------------------- #
 
-    write_to_files(TA_AXIS,
-            TD_AXIS,
-            signal,
-            signal_sampled,
-            dirac_sequence,
-            signal_reconstructed,
-            PLOT_START,
-            PLOT_STOP,
-            PLOTTING_POINTS,
-            NA,
-            NA_PLOT_SECTION,
-            T_START,
-            T_STOP)
-    #plot_the_things(TA_AXIS,TD_AXIS,
-    #        signal,
-    #        signal_sampled,
-    #        dirac_sequence,
-    #        signal_reconstructed,
-    #        PLOT_START,PLOT_STOP)
+    # Output --------------------------------------------------------------- #
+    if store:
+        write_to_files(
+                ta_axis, td_axis,
+                signal, signal_sampled,
+                dirac_sequence,
+                signal_reconstructed,
+                plot_start, plot_stop,
+                plotting_points, na, na_plot_section,
+                t_start, t_stop)
+
+    if display:
+        plot_the_things(
+                ta_axis, td_axis,
+                signal, signal_sampled,
+                dirac_sequence,
+                signal_reconstructed,
+                plot_start, plot_stop,
+                t_start, t_stop,
+                freq_factor,
+                na)
+
+
+# ########################################################################## #
+# ENTRY POINT                                                                #
+# ########################################################################## #
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
