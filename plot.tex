@@ -1,0 +1,37 @@
+\documentclass{minimal}
+\usepackage[a4paper,margin=5mm,landscape]{geometry}
+\setlength{\parindent}{0pt}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.14}
+%http://tex.stackexchange.com/questions/13816/dimension-too-large-while-plotting-with-pgfplots#13838
+\input{params.tex}
+\begin{document}
+\begin{tikzpicture}
+    \pgfplotsset{every axis/.style={
+        height=0.5\textheight,
+        width=0.5\textwidth,
+        unbounded coords=discard,
+        filter discard warning=false,
+        xmin=\plotStart,
+        xmax=\plotStop,
+    }}
+    % Analog Input Signal
+    \begin{axis}[at={(0mm,0.5\textheight)},each nth point=\eachNth]
+        \addplot[red] table {analogSignal.dat};
+    \end{axis}
+    % Sampled Signal
+    \begin{axis}[at={(0.5\textwidth,0.5\textheight)}]
+        \addplot+[ycomb,draw=gray,mark options={gray}] table {sampledSignal.dat};
+        \addplot[red,no markers] coordinates {(\plotStart,0) (\plotStop,0)};
+    \end{axis}
+    % Error between reconstructed signal and original signal
+    \begin{axis}[at={(0mm,0mm)}, each nth point=\eachNth, restrict y to domain=\yLowerBound:\yUpperBound]
+        \addplot[red] table {errorSignal.dat};
+    \end{axis}
+    % Reconstructed signal overlaid with original signal
+    \begin{axis}[at={(0.5\textwidth,0mm)}, each nth point=\eachNth]
+        \addplot[red] table {analogSignal.dat};
+        \addplot[blue] table {reconstructedSignal.dat};
+    \end{axis}
+\end{tikzpicture}
+\end{document}
