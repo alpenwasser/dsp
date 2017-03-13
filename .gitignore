@@ -1,0 +1,8 @@
+*.aux
+*.log
+*.pdf
+TeX/*
+!*TeX/template.tex
+data
+svg
+pdf

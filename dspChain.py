@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 
 from itertools import repeat
+import shutil as shutil
 import numpy as np
 import matplotlib.pyplot as plt
 import multiprocessing as mp
 import sys as sys
+import os as os
 import argparse as argp
+import re as re
 
 # Performance
 # Desktop: 2 x Intel Xeon X5680 (3.33 GHz, 2 x 6PC/12LC == 12PC/24LC):
@@ -25,23 +28,22 @@ import argparse as argp
 # ########################################################################## #
 # FUNCTIONS                                                                  #
 # ########################################################################## #
-def check_input(plot_start,
-        plot_stop,
-        t_start,
-        t_stop,
+def check_input(
+        plot_start, plot_stop,
+        t_start, t_stop,
         plotting_points,
         na_plot_section,
         delta_t,
         fa,
         freq_factor,
-        fs,
-        ts,
-        ta_axis,
-        td_axis,
-        na,
-        nd):
+        fs, ts,
+        ta_axis, td_axis,
+        na, nd):
 
-    # Starting earlier than 0 has undesired results.
+    # ---------------------------------------------------- #
+    # Starting earlier than 0 has undesired results, so we #
+    # don't.                                               #
+    # ---------------------------------------------------- #
     assert plot_start >= 0
     assert plot_stop > t_start
     assert t_start >= 0
@@ -59,12 +61,53 @@ def check_input(plot_start,
     assert fs > 0
 
 
+def display_config(
+        plot_start, plot_stop,
+        t_start, t_stop,
+        plotting_points,
+        na_plot_section,
+        delta_t,
+        fa,
+        freq_factor,
+        fs, ts,
+        display, store, datadir,
+        na, nd):
+
+    print('Processing Signal with the following parameters')
+    print('----------------------------------------------------')
+    print('Plot Range                      {: >8.2f} to {: >8.2f}'.format(plot_start, plot_stop))
+    print('Signal Range                    {: >8.2f} to {: >8.2f}'.format(t_start, t_stop))
+    print('Analog Points in Signal Range   {: >8.0e}'.format(na))
+    print('Analog Points in Plot Range     {: >8.0e}'.format(na_plot_section))
+    print('Points to Plot in TeX           {: >8.0e}'.format(plotting_points))
+    print('Digital Samples                 {: >8.0e}'.format(nd))
+    print('Analog Base Frequency           {: >8.2f} Hz'.format(fa))
+    print('Sampling Factor                 {: >8.2f}'.format(freq_factor))
+    print('Sampling Frequency              {: >8.2f} Hz'.format(fs))
+
+    if store:
+        print('Export Data                         True')
+        print('Data Dir Relative to Working Dir    {}'.format(datadir))
+    else:
+        print('Export Data                        False')
+
+    if display:
+        print('Display Data in Matplotlib          True')
+    else:
+        print('Display Data in Matplotlib         False')
+
+
 def get_analog_signal(time_axis, analog_base_frequency, waveform):
 
-    # Default signal: sine wave
+    # ---------------------------------------------------- #
+    # Returns  the y  values for  a given  time axis  at a #
+    # given  base frequeny.   The waveform  argument is  a #
+    # string  specifying which  sort  of signal  is to  be #
+    # returned.  The default signal is a sine wave.        #
+    # ---------------------------------------------------- #
 
     if waveform == 'trapezoid':
-        # Trapezoidal Wave ------------------------------------------------- #
+        # Trapezoidal Wave ------------------------------- #
         #http://www.till.com/articles/QuadTrapVCO/trapezoid.html
         signal = np.array(np.zeros(time_axis.size))
         for k in range(1,10):
@@ -73,7 +116,7 @@ def get_analog_signal(time_axis, analog_base_frequency, waveform):
                     np.sin(k*np.pi*analog_base_frequency*time_axis)))
         return signal
     else:
-        # Simple Sine ------------------------------------------------------ #
+        # Sine ------------------------------------------- #
         return np.sin(2 * np.pi * analog_base_frequency * time_axis)
 
 
@@ -81,10 +124,12 @@ def find_closest_time_point(digital_time_point,analog_time_axis,delta_a):
 
     axis_with_single_dirac = np.zeros(analog_time_axis.size)
 
-    j = 0
+    j = 0   # analog point index
     for t in analog_time_axis:
-        # For  the closest  possible analog time  point, set
-        # dirac pulse to 1.
+        # ------------------------------------------------ #
+        # For the closest possible  analog time point, set #
+        # dirac pulse to 1.                                #
+        # ------------------------------------------------ #
         if digital_time_point >= t - delta_a/2 \
                 and digital_time_point < t + delta_a/2:
             axis_with_single_dirac[j] = 1
@@ -95,9 +140,17 @@ def find_closest_time_point(digital_time_point,analog_time_axis,delta_a):
 
 def get_dirac_sequence(
         analog_time_axis,digital_time_axis,analog_sample_count,delta_a,pool):
+
     dirac_sequence = np.vstack(
             [analog_time_axis,np.zeros(analog_sample_count)])
 
+    # ---------------------------------------------------- #
+    # Each process started by  starmap will return a dirac #
+    # sequence with  one single impulse in  it. To get the #
+    # complete  axis with  all  the needed  pulses for  an #
+    # entire sequence, we simply sum  up all the axes with #
+    # a single pulse in them.                              #
+    # ---------------------------------------------------- #
     results = sum(pool.starmap(
         find_closest_time_point,
         zip(
@@ -113,8 +166,9 @@ def get_dirac_sequence(
 
 def strip_sampled_signal(
         signal_sampled_padded,dirac_sequence,digital_sample_count):
-    j = 0
-    k = 0
+
+    j = 0 # analog point index (padded)
+    k = 0 # digital sample index
     signal_stripped = np.zeros(digital_sample_count)
     for value in signal_sampled_padded:
         if dirac_sequence[1,j] != 0:
@@ -133,6 +187,10 @@ def sample_signal(signal,dirac_sequence,digital_sample_count):
 def reconstruct_at_analog_point(
         k, analog_time_point, digital_time_axis, signal_sampled, delta_a, Ts):
 
+    # ---------------------------------------------------- #
+    # Calculates the  y value of the  reconstructed signal #
+    # at one specific time point.                          #
+    # ---------------------------------------------------- #
     signal_reconstruced_at_analog_point = 0
     j = 0
     for t in digital_time_axis:
@@ -150,7 +208,18 @@ def reconstruct_signal(
         Ts,
         analog_sample_count,
         pool):
-    # Apparently these will be in the correct order. Cool.
+
+    # ---------------------------------------------------- #
+    # results    will   contain    the    y   values    of #
+    # the    reconstructed    signal   (each    y    value #
+    # having    been   calculated    by   the    call   to #
+    # reconstruct_at_analog_point). Apparently,    starmap #
+    # returns  them   in  the  correct  order,   so  there #
+    # is  no  need  to  track which  y  value  belongs  to #
+    # which  time  point  (which  could  be  done  in  the #
+    # reconstruct_at_analog_point  routine,   if  it  ever #
+    # becomes necessary).                                  #
+    # ---------------------------------------------------- #
     results = pool.starmap(
         reconstruct_at_analog_point,
         zip(
@@ -206,9 +275,7 @@ def plot_the_things(
         '\nSampling Frequency={:.2f}*f_analog'.format(freq_factor),
         fontsize=12)
     plt.show()
-    #plt.tight_layout()
-    #fig1.subplots_adjust(top=0.85,hspace=0.3)
-    #fig1.savefig('test.pdf')
+
 
 # -------------------------------------------------------- #
 # Returns the minimum and maximum  values in a slice of an #
@@ -233,29 +300,30 @@ def get_y_bounds_in_slice(data,
     return (y_lower_bound,y_upper_bound)
 
 
-# -------------------------------------------------------- #
-# Write  the   data  to  text  files   for  processing  in #
-# pgfplots. Since TeX really  dislikes underscores in file #
-# names, use camelCase instead.                            #
-# -------------------------------------------------------- #
-def write_to_files(analog_time_axis,
-        digital_time_axis,
-        signal, signal_sampled,
-        dirac_sequence,
-        signal_reconstructed,
-        plot_start, plot_stop,
-        plotting_points, na, na_plot_section,
-        t_start, t_stop):
+def generate_tex_file(
+        tex_file,
+        data_dir,
+        analog_file_path,sampled_file_path,reconstr_file_path,error_file_path,
+        error_data, plot_start, plot_stop, t_start, t_stop,
+        na, na_plot_section, plotting_points):
 
-    analog_data        = np.vstack([analog_time_axis,signal])
-    sampled_data       = np.vstack([digital_time_axis,signal_sampled])
-    reconstructed_data = np.vstack([analog_time_axis,signal_reconstructed])
-    error_data         = np.vstack([analog_time_axis,np.subtract(signal_reconstructed, signal)])
+    tex_template = os.path.join('TeX','template.tex')
+    tex_file_path = os.path.join('TeX', tex_file)
+    param_file = os.path.join('TeX','params.tex')
 
-    np.savetxt('analogSignal.dat',       analog_data.transpose())
-    np.savetxt('sampledSignal.dat',      sampled_data.transpose())
-    np.savetxt('reconstructedSignal.dat',reconstructed_data.transpose())
-    np.savetxt('errorSignal.dat',        error_data.transpose())
+    # ---------------------------------------------------- #
+    # We create a new TeX  file with the parameters in its #
+    # filename. This avoids  having to manually  name each #
+    # plot pdf file.                                       #
+    # ---------------------------------------------------- #
+    shutil.copy(tex_template,tex_file_path)
+
+    # Relative file paths from TeX file to data files
+    tex_analog_file_path   = os.path.join('..', analog_file_path)
+    tex_sampled_file_path  = os.path.join('..', sampled_file_path)
+    tex_reconstr_file_path = os.path.join('..', reconstr_file_path)
+    tex_error_file_path    = os.path.join('..', error_file_path)
+
 
     # ---------------------------------------------------- #
     # We need to set upper  and lower boundaries for the y #
@@ -264,20 +332,83 @@ def write_to_files(analog_time_axis,
     # values get too  small (which is the case  for a high #
     # number of analog sample points).                     #
     # ---------------------------------------------------- #
-    y_lower_bound,y_upper_bound = get_y_bounds_in_slice(error_data[1],
-            plot_start,
-            plot_stop,
-            t_start,
-            t_stop,
+    y_lower_bound,y_upper_bound = get_y_bounds_in_slice(
+            error_data[1],
+            plot_start, plot_stop,
+            t_start, t_stop,
             na)
 
     nth = int(na_plot_section / plotting_points)
-    with open('params.tex', 'w') as file:
+    with open(param_file, 'w') as file:
         file.write('\def\plotStart{{{:.3f}}}\n'.format(plot_start))
         file.write('\def\plotStop{{{:.3f}}}\n'.format(plot_stop))
         file.write('\def\eachNth{{{:d}}}\n'.format(nth))
         file.write('\def\yLowerBound{{{:.8f}}}\n'.format(y_lower_bound * 1.1))
         file.write('\def\yUpperBound{{{:.8f}}}\n'.format(y_upper_bound * 1.1))
+        file.write('\def\\analogFilePath{{{}}}\n'.format(tex_analog_file_path))
+        file.write('\def\sampledFilePath{{{}}}\n'.format(tex_sampled_file_path))
+        file.write('\def\\reconstrFilePath{{{}}}\n'.format(tex_reconstr_file_path))
+        file.write('\def\errorFilePath{{{}}}\n'.format(tex_error_file_path))
+
+
+# -------------------------------------------------------- #
+# Write  the   data  to  text  files   for  processing  in #
+# pgfplots. Since TeX really  dislikes underscores in file #
+# names, use camelCase instead.                            #
+# -------------------------------------------------------- #
+def write_to_files(
+        analog_time_axis, digital_time_axis,
+        signal, signal_sampled,
+        dirac_sequence,
+        signal_reconstructed,
+        plot_start, plot_stop,
+        plotting_points, na, na_plot_section,
+        t_start, t_stop,
+        waveform,
+        freq_factor,
+        data_dir):
+
+    analog_data        = np.vstack([analog_time_axis,signal])
+    sampled_data       = np.vstack([digital_time_axis,signal_sampled])
+    reconstructed_data = np.vstack([analog_time_axis,signal_reconstructed])
+    error_data         = np.vstack([analog_time_axis,np.subtract(signal_reconstructed, signal)])
+
+    os.makedirs(data_dir, exist_ok=True)
+
+    # ---------------------------------------------------- #
+    # Create  a   prefix  corresponding  to   the  current #
+    # configuration. Some rounding is involved.            #
+    # ---------------------------------------------------- #
+    prefix = '{}--{:.0e}-anPts--fs-{:.1f}-fa--range-{:.0f}--zoom-{:.0f}'.format(
+            waveform,
+            na,
+            freq_factor,
+            t_stop-t_start,
+            plot_stop-plot_start
+        )
+
+    tex_file = prefix + '.tex'
+    analog_file = prefix + '--analogSignal.dat'
+    sampled_file = prefix + '--sampledSignal.dat'
+    reconstr_file = prefix + '--reconstructedSignal.dat'
+    error_file = prefix + '--errorSignal.dat'
+
+    analog_file_path = os.path.join(data_dir,analog_file)
+    sampled_file_path = os.path.join(data_dir,sampled_file)
+    reconstr_file_path = os.path.join(data_dir,reconstr_file)
+    error_file_path = os.path.join(data_dir,error_file)
+
+    np.savetxt(analog_file_path,   analog_data.transpose())
+    np.savetxt(sampled_file_path,  sampled_data.transpose())
+    np.savetxt(reconstr_file_path, reconstructed_data.transpose())
+    np.savetxt(error_file_path,    error_data.transpose())
+
+    generate_tex_file(
+        tex_file,
+        data_dir,
+        analog_file_path,sampled_file_path,reconstr_file_path,error_file_path,
+        error_data, plot_start, plot_stop, t_start, t_stop,
+        na, na_plot_section, plotting_points)
 
 
 # ########################################################################## #
@@ -326,11 +457,16 @@ def main(argv):
     parser.add_argument("-d",
             "--display",
             action = 'store_true',
-            help = "whether or not to display the waves in a matplotlib window")
+            help = "display the waves in a matplotlib window")
     parser.add_argument("-o",
             "--store",
             action = 'store_true',
-            help = "output results to data files")
+            help = "Output results to data files. Automatically True if -i specified.")
+    parser.add_argument("-i",
+            "--datadir",
+            type=str,
+            default = 'data',
+            help = "The directory to store data files. Sets -o to True if specified.")
     args = parser.parse_args()
 
     # Copy Arguments Into Variables for Further Use ------------------------ #
@@ -348,31 +484,47 @@ def main(argv):
         freq_factor = args.samplingfactor
     if args.waveform:
         waveform = args.waveform
+    if args.datadir:
+        datadir = args.datadir
+        store = True
 
-    # Opens a matplotlib window if True ------------------------------------ #
+    # Open a matplotlib Window if True ------------------------------------- #
     if args.display:
         display = True
     else:
         display = False
 
-    # Stores the Results to Files if True ---------------------------------- #
+    # Store the Results to Files if True ----------------------------------- #
     if args.store:
         store = True
     else:
         store = False
 
-    # Determine Some Parameters from Input Arguments ----------------------- #
+    # Determine Parameters from Input Arguments ---------------------------- #
     t_start         =  0
     t_stop          = plot_stop + (plot_start - t_start)
     na_plot_section = np.ceil(na * (plot_stop - plot_start)/(t_stop - t_start))
     delta_t         = (t_stop - t_start) / na
-    fs              = freq_factor * fa        # sampling frequency
+    fs              = freq_factor * fa                  # sampling frequency #
     ts              = 1/fs
     ta_axis         = np.arange(t_start,t_stop,delta_t)
     td_axis         = np.arange(t_start,t_stop+ts,ts)
     nd              = td_axis.size
     na              = ta_axis.size
 
+    # Display  Configuration ----------------------------------------------- #
+    display_config(
+            plot_start, plot_stop,
+            t_start, t_stop,
+            plotting_points,
+            na_plot_section,
+            delta_t,
+            fa, freq_factor, fs,
+            ts,
+            display, store, datadir,
+            na, nd)
+
+    # Create Process Pool -------------------------------------------------- #
     pool = mp.Pool()
 
     # Verify Some Additional Constraints ----------------------------------- #
@@ -415,7 +567,9 @@ def main(argv):
 
     # Convolution ---------------------------------------------------------- #
 
-    # Output --------------------------------------------------------------- #
+    # Power ---------------------------------------------------------------- #
+
+    # Output (Optional, Disabled by Default) ------------------------------- #
     if store:
         write_to_files(
                 ta_axis, td_axis,
@@ -424,7 +578,10 @@ def main(argv):
                 signal_reconstructed,
                 plot_start, plot_stop,
                 plotting_points, na, na_plot_section,
-                t_start, t_stop)
+                t_start, t_stop,
+                waveform,
+                freq_factor,
+                datadir)
 
     if display:
         plot_the_things(

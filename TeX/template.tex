@@ -17,21 +17,21 @@
     }}
     % Analog Input Signal
     \begin{axis}[at={(0mm,0.5\textheight)},each nth point=\eachNth]
-        \addplot[red] table {analogSignal.dat};
+        \addplot[red] table {\analogFilePath};
     \end{axis}
     % Sampled Signal
     \begin{axis}[at={(0.5\textwidth,0.5\textheight)}]
-        \addplot+[ycomb,draw=gray,mark options={gray}] table {sampledSignal.dat};
+        \addplot+[ycomb,draw=gray,mark options={gray}] table {\sampledFilePath};
         \addplot[red,no markers] coordinates {(\plotStart,0) (\plotStop,0)};
     \end{axis}
     % Error between reconstructed signal and original signal
     \begin{axis}[at={(0mm,0mm)}, each nth point=\eachNth, restrict y to domain=\yLowerBound:\yUpperBound]
-        \addplot[red] table {errorSignal.dat};
+        \addplot[red] table {\errorFilePath};
     \end{axis}
     % Reconstructed signal overlaid with original signal
     \begin{axis}[at={(0.5\textwidth,0mm)}, each nth point=\eachNth]
-        \addplot[red] table {analogSignal.dat};
-        \addplot[blue] table {reconstructedSignal.dat};
+        \addplot[red] table {\analogFilePath};
+        \addplot[blue] table {\reconstrFilePath};
     \end{axis}
 \end{tikzpicture}
 \end{document}
