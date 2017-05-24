@@ -565,9 +565,13 @@ def main(argv):
     # sampling of DFT of analog signal
     # IDFT of samples of DFT of analog signal
 
+    # Noise ---------------------------------------------------------------- #
+
     # Convolution ---------------------------------------------------------- #
 
     # Power ---------------------------------------------------------------- #
+
+    # Filtering ------------------------------------------------------------ #
 
     # Output (Optional, Disabled by Default) ------------------------------- #
     if store:
